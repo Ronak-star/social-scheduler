@@ -7,6 +7,9 @@ import authRouter from "./routes/authRoutes.js";
 import socialAuthRouter from "./routes/socialAuthRoutes.js";
 import accountRouter from "./routes/accountsRoutes.js";
 import postRouter from "./routes/postRoutes.js";
+import activityRouter from "./routes/activityRoutes.js";
+import { initScheduler } from "./services/schedulerService.js";
+
 
 const app = express();
 
@@ -34,6 +37,11 @@ app.use("/api/auth",authRouter)
 app.use("/api/auth",socialAuthRouter)
 app.use("/api/accounts",accountRouter)
 app.use("/api/posts",postRouter)
+app.use("/api/activity",activityRouter)
+
+//Initialize Scheduler
+initScheduler()
+
 app.listen(port, () => {
     console.log(`Server is running at http://localhost:${port}`);
 });

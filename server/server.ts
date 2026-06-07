@@ -5,6 +5,8 @@ import { connect } from "node:http2";
 import connectDB from "./config/db.js";
 import authRouter from "./routes/authRoutes.js";
 import socialAuthRouter from "./routes/socialAuthRoutes.js";
+import accountRouter from "./routes/accountsRoutes.js";
+import postRouter from "./routes/postRoutes.js";
 
 const app = express();
 
@@ -30,7 +32,8 @@ app.get('/', (_req: Request, res: Response) => {
 
 app.use("/api/auth",authRouter)
 app.use("/api/auth",socialAuthRouter)
-
+app.use("/api/accounts",accountRouter)
+app.use("/api/posts",postRouter)
 app.listen(port, () => {
     console.log(`Server is running at http://localhost:${port}`);
 });

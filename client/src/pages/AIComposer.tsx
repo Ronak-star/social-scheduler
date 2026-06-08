@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { dummyGenerationData, PLATFORMS } from "../assets/assets";
+import api from "../api/axios";
+import toast from "react-hot-toast";
 import {
   Loader2Icon,
   ArrowRightIcon,
@@ -26,63 +28,75 @@ const AIComposer = () => {
   const [scheduledTime, setScheduledTime] = useState("");
   const [scheduling, setScheduling] = useState(false);
 
-  const fetchGenerations = async () => {
-    setGenerations(dummyGenerationData);
-  };
+ const fetchGenerations = async () => {
+    try {
+        const { data } = await api.get("api/posts/generations")
+        setGenerations(data)
+    } catch (error: any) {
+        toast.error(error?.response?.data?.message || error?.message || "Failed to fetch generations")
+    }
+}
+
 
   useEffect(() => {
     fetchGenerations();
   }, []);
 
   const handleGenerate = async () => {
-    setLoading(true);
+    if(!prompt){
+        toast.error("Please enter a prompt");
+        return;
+    }
+    setLoading(true)
+    try {
+      
+        const { data } = await api.post("/api/posts/generate", {prompt, tone, generateImage});
+        setGenerations([data, ...generations]);
+        setActiveScheduler(data)
+        toast.success("Content generated!")
+    } catch (error: any) {
+        toast.error(error?.response?.data?.message || error?.message);
+    }finally{
+        setLoading(false)
+    }
+}
 
-    setTimeout(() => {
-      setLoading(false);
-    }, 2000);
-  };
 
   const handleSchedule = async () => {
-    if (!activeScheduler) return;
-
-    if (selectedPlatforms.length === 0) {
-      alert("Please select at least one platform");
-      return;
+    if(!activeScheduler) return;
+    if(selectedPlatforms.length === 0){
+        toast.error("Select at least one platform");
+        return;
+    }
+    if(!scheduledDate || !scheduledTime){
+        toast.error("Select date and time");
+        return;
     }
 
-    if (!scheduledDate || !scheduledTime) {
-      alert("Please select date and time");
-      return;
-    }
-
+    const scheduledFor = new Date(`${scheduledDate}T${scheduledTime}`).toISOString()
     setScheduling(true);
-
-    try {
-      const payload = {
-        generationId: activeScheduler._id,
-        content: activeScheduler.content,
-        platforms: selectedPlatforms,
-        scheduledDate,
-        scheduledTime,
-      };
-
-      console.log("Scheduling:", payload);
-
-      setTimeout(() => {
-        setScheduling(false);
-
+       try {
+        await api.post("/api/posts", {
+            content: activeScheduler.content,
+            mediaUrl: activeScheduler.mediaUrl,
+            mediaType: activeScheduler.mediaType,
+            platforms: selectedPlatforms,
+            scheduledFor,
+            status: "scheduled",
+        })
+        toast.success("AI Post scheduled!");
+        setActiveScheduler(null);
         setSelectedPlatforms([]);
         setScheduledDate("");
         setScheduledTime("");
-        setActiveScheduler(null);
-
-        alert("Post scheduled successfully!");
-      }, 2000);
-    } catch (error) {
-      console.error(error);
-      setScheduling(false);
+    } catch (error: any) {
+        toast.error(error?.response?.data?.message || "Failed to schedule");
+    } finally {
+        setScheduling(false);
     }
-  };
+}
+
+
 
   const tones = [
     "Professional",
@@ -289,6 +303,7 @@ const AIComposer = () => {
     </div>
   </div>
    {/* ✅ Date & Time — bilkul missing tha */}
+   
                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
   <div className="relative">
     <CalendarIcon className="size-4 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />

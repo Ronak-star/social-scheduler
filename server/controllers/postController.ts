@@ -141,6 +141,7 @@ export const schedulePost = async (req: AuthRequest, res: Response): Promise<voi
 
 }
 */
+/*
 
 import { Response } from "express";
 import { AuthRequest } from "../middlewares/authMiddlewware.js";
@@ -351,3 +352,444 @@ export const schedulePost = async (req: AuthRequest, res: Response): Promise<voi
         res.status(500).json({ message: error?.message || "Server error" });
     }
 }
+    */
+
+/*
+
+   import { Response } from "express";
+import { AuthRequest } from "../middlewares/authMiddlewware.js";
+import { GoogleGenAI } from "@google/genai";
+import axios from "axios";
+import { cloudinary } from "../config/cloudinary.js";
+import { Generation } from "../models/Generation.js";
+import { Post } from "../models/Post.js";
+
+
+// ──────────────────────────────────────────────
+// Generate post  →  POST /api/posts/generate
+// ──────────────────────────────────────────────
+export const generatePost = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    const { prompt, tone, generateImage } = req.body;
+
+    if (!prompt || !tone) {
+      res.status(400).json({ message: "prompt aur tone dono required hain." });
+      return;
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      res.status(500).json({ message: "GEMINI_API_KEY .env mein missing hai." });
+      return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+
+    const textResponse = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Generate a social media post based on this prompt: "${prompt}".
+Tone: ${tone}.
+Include relevant hashtags.
+Return ONLY a valid JSON object with exactly two keys:
+  "content"     – the finished post text with hashtags
+  "imagePrompt" – a highly descriptive image-generator prompt that complements the post.
+Do NOT wrap the JSON in markdown backticks.`,
+    });
+
+    let content = "";
+    let imagePrompt = prompt;
+
+    try {
+      const rawText = textResponse.text ?? "";
+      const cleaned = rawText.replace(/```(?:json)?/g, "").trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        content = data.content ?? rawText;
+        imagePrompt = data.imagePrompt ?? prompt;
+      } else {
+        content = rawText;
+      }
+    } catch {
+      content = textResponse.text ?? "";
+    }
+
+    let mediaUrl = "";
+
+    if (generateImage) {
+      const openAiKey = process.env.OPENAI_API_KEY;
+      if (!openAiKey) {
+        res.status(500).json({ message: "OPENAI_API_KEY .env mein missing hai." });
+        return;
+      }
+
+      const imageRes = await axios.post(
+        "https://api.openai.com/v1/images/generations",
+        {
+          model: "gpt-image-2",
+          prompt: imagePrompt,
+          n: 1,
+          size: "1024x1024",
+          quality: "low",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${openAiKey}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const tempUrl = imageRes.data?.data?.[0]?.url ?? "";
+
+      if (tempUrl) {
+        // ✅ FIX: URL se seedha upload nahi — pehle buffer mein download, phir upload
+        const imageBuffer = await axios.get(tempUrl, { responseType: "arraybuffer" });
+        const buffer = Buffer.from(imageBuffer.data);
+
+        const uploadResult = await new Promise<any>((resolve, reject) => {
+          cloudinary.uploader
+            .upload_stream(
+              { resource_type: "image", folder: "ai-generations" },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            )
+            .end(buffer);
+        });
+
+        mediaUrl = uploadResult.secure_url;
+      }
+    }
+
+    const generation = await Generation.create({
+      user: req.user?._id,
+      prompt,
+      content,
+      mediaUrl,
+      mediaType: mediaUrl ? "image" : undefined,
+      tone,
+    });
+
+    res.status(200).json({
+      success: true,
+      generation,
+    });
+
+  } catch (error: unknown) {
+    console.error("[generatePost] error:", error);
+    const message = error instanceof Error ? error.message : "Internal server error";
+    res.status(500).json({ success: false, message });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Get generations  →  GET /api/posts/generations
+// ──────────────────────────────────────────────
+export const getGenerations = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const generations = await Generation.find({ user: req.user?._id }).sort({ createdAt: -1 });
+    res.json(generations);
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Get posts  →  GET /api/posts
+// ──────────────────────────────────────────────
+export const getPosts = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const posts = await Post.find({ user: req.user?._id }).sort({ createdAt: -1 });
+    res.json(posts);
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Schedule post  →  POST /api/posts
+// ──────────────────────────────────────────────
+export const schedulePost = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { content, platforms, scheduledFor, status } = req.body;
+
+    let parsedPlatforms = platforms;
+    if (typeof platforms === "string") {
+      try {
+        parsedPlatforms = JSON.parse(platforms);
+      } catch {
+        parsedPlatforms = platforms.split(",");
+      }
+    }
+
+    let mediaUrl: string | undefined = req.body.mediaUrl;
+    let mediaType: "image" | "video" | undefined = req.body.mediaType;
+
+    if (req.file) {
+      const result = await new Promise<any>((resolve, reject) => {
+        cloudinary.uploader
+          .upload_stream(
+            { resource_type: "auto", folder: "social-scheduler" },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result);
+            }
+          )
+          .end(req.file!.buffer);
+      });
+      mediaUrl = result.secure_url;
+      mediaType = result.resource_type === "video" ? "video" : "image";
+    }
+
+    const post = await Post.create({
+      user: req.user?._id,
+      content,
+      platforms: parsedPlatforms,
+      mediaUrl,
+      mediaType,
+      scheduledFor,
+      status,
+    });
+
+    res.status(201).json(post);
+
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};
+
+
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Response } from "express";
+import { AuthRequest } from "../middlewares/authMiddlewware.js";
+import { GoogleGenAI } from "@google/genai";
+import axios from "axios";
+import { cloudinary } from "../config/cloudinary.js";
+import { Generation } from "../models/Generation.js";
+import { Post } from "../models/Post.js";
+
+// ──────────────────────────────────────────────
+// Generate post  →  POST /api/posts/generate
+// ──────────────────────────────────────────────
+export const generatePost = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    const { prompt, tone, generateImage } = req.body;
+
+    if (!prompt || !tone) {
+      res.status(400).json({ message: "prompt aur tone dono required hain." });
+      return;
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      res.status(500).json({ message: "GEMINI_API_KEY .env mein missing hai." });
+      return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+
+    const textResponse = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Generate a social media post based on this prompt: "${prompt}".
+Tone: ${tone}.
+Include relevant hashtags.
+Return ONLY a valid JSON object with exactly two keys:
+  "content"     – the finished post text with hashtags
+  "imagePrompt" – a highly descriptive image-generator prompt that complements the post.
+Do NOT wrap the JSON in markdown backticks.`,
+    });
+
+    let content = "";
+    let imagePrompt = prompt;
+
+    try {
+      const rawText = textResponse.text ?? "";
+      const cleaned = rawText.replace(/```(?:json)?/g, "").trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        content = data.content ?? rawText;
+        imagePrompt = data.imagePrompt ?? prompt;
+      } else {
+        content = rawText;
+      }
+    } catch {
+      content = textResponse.text ?? "";
+    }
+
+    let mediaUrl = "";
+
+    if (generateImage) {
+      const openAiKey = process.env.OPENAI_API_KEY;
+      if (!openAiKey) {
+        res.status(500).json({ message: "OPENAI_API_KEY .env mein missing hai." });
+        return;
+      }
+
+    const imageRes = await axios.post(
+  "https://api.openai.com/v1/images/generations",
+  {
+    model: "dall-e-3",
+    prompt: imagePrompt,
+    n: 1,
+    size: "1024x1024",
+    quality: "standard",  // "standard" ya "hd" — "low" valid nahi
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${openAiKey}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 30000,  // ye bhi add karo
+  }
+);
+
+      const tempUrl = imageRes.data?.data?.[0]?.url ?? "";
+
+      if (tempUrl) {
+        // ✅ FIX: URL se seedha upload nahi — pehle buffer mein download, phir upload
+        const imageBuffer = await axios.get(tempUrl, { responseType: "arraybuffer" });
+        const buffer = Buffer.from(imageBuffer.data);
+
+        const uploadResult = await new Promise<any>((resolve, reject) => {
+          cloudinary.uploader
+            .upload_stream(
+              { resource_type: "image", folder: "ai-generations" },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            )
+            .end(buffer);
+        });
+
+        mediaUrl = uploadResult.secure_url;
+      }
+    }
+
+    const generation = await Generation.create({
+      user: req.user?._id,
+      prompt,
+      content,
+      mediaUrl,
+      mediaType: mediaUrl ? "image" : undefined,
+      tone,
+    });
+
+    res.status(200).json({
+      success: true,
+      generation,
+    });
+
+  } catch (error: unknown) {
+    console.error("[generatePost] error:", error);
+    const message = error instanceof Error ? error.message : "Internal server error";
+    res.status(500).json({ success: false, message });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Get generations  →  GET /api/posts/generations
+// ──────────────────────────────────────────────
+export const getGenerations = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const generations = await Generation.find({ user: req.user?._id }).sort({ createdAt: -1 });
+    res.json(generations);
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Get posts  →  GET /api/posts
+// ──────────────────────────────────────────────
+export const getPosts = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const posts = await Post.find({ user: req.user?._id }).sort({ createdAt: -1 });
+    res.json(posts);
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};
+
+// ──────────────────────────────────────────────
+// Schedule post  →  POST /api/posts
+// ──────────────────────────────────────────────
+export const schedulePost = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { content, platforms, scheduledFor, status } = req.body;
+
+    let parsedPlatforms = platforms;
+    if (typeof platforms === "string") {
+      try {
+        parsedPlatforms = JSON.parse(platforms);
+      } catch {
+        parsedPlatforms = platforms.split(",");
+      }
+    }
+
+    let mediaUrl: string | undefined = req.body.mediaUrl;
+    let mediaType: "image" | "video" | undefined = req.body.mediaType;
+
+    if (req.file) {
+      const result = await new Promise<any>((resolve, reject) => {
+        cloudinary.uploader
+          .upload_stream(
+            { resource_type: "auto", folder: "social-scheduler" },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result);
+            }
+          )
+          .end(req.file!.buffer);
+      });
+      mediaUrl = result.secure_url;
+      mediaType = result.resource_type === "video" ? "video" : "image";
+    }
+
+    const post = await Post.create({
+      user: req.user?._id,
+      content,
+      platforms: parsedPlatforms,
+      mediaUrl,
+      mediaType,
+      scheduledFor,
+      status,
+    });
+
+    res.status(201).json(post);
+
+  } catch (error: any) {
+    res.status(500).json({ message: error?.message || "Server error" });
+  }
+};

@@ -47,7 +47,7 @@ export const disconnectAccount = async (req: AuthRequest, res: Response) : Promi
                         return
             }
         }
-        await account.deleteOne
+        await account.deleteOne()
         res.json({message: "Account disconnected successfully"});
     } catch (error: any) {
         res.status(500).json({ message: error?.message || "Server error" });

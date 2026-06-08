@@ -7,7 +7,7 @@ interface AccountListProps {
   connectedIds: string[];
 }
 
-const AccountList = ({ accounts, onDisconnect, connectedIds }: AccountListProps) => {
+const AccountList = ({ accounts, onDisconnect }: AccountListProps) => {
 
   const handleDisconnect = async (accountId: string) => {
     const confirm = window.confirm("Are you sure you want to disconnect this account?");
